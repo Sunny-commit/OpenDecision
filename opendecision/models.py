@@ -1,18 +1,24 @@
 """Strict public data models for OpenDecision."""
 
 from __future__ import annotations
+
 import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DecisionType = Literal["choice", "score", "noul"]
 RiskLevel = Literal["low", "medium", "high", "critical"]
 _OPTION_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
+
 class DecisionQuestion(BaseModel):
+    """A strict typed question sent to a decision provider."""
+
     model_config = ConfigDict(extra="forbid")
+
     type: DecisionType
     instructions: str = Field(min_length=3, max_length=2000)
     options: dict[str, str] | None = None
@@ -28,7 +34,9 @@ class DecisionQuestion(BaseModel):
             raise ValueError("choice questions require at least two options")
         for name, description in value.items():
             if not _OPTION_RE.fullmatch(name):
-                raise ValueError("option names must be lowercase snake_case and at most 64 characters")
+                raise ValueError(
+                    "option names must be lowercase snake_case and at most 64 characters"
+                )
             if not description.strip():
                 raise ValueError(f"option {name!r} requires a description")
         return value
@@ -57,6 +65,7 @@ class DecisionQuestion(BaseModel):
         return cls.model_validate(question)
 
     def to_laya(self) -> dict[str, Any]:
+        """Return the exact question shape expected by Laya."""
         payload: dict[str, Any] = {"type": self.type, "instructions": self.instructions}
         if self.type == "choice":
             payload["criteria"] = self.options or self.criteria
@@ -64,8 +73,12 @@ class DecisionQuestion(BaseModel):
             payload["criteria"] = self.criteria
         return payload
 
+
 class DecisionContext(BaseModel):
+    """Non-sensitive operational context attached to a decision trace."""
+
     model_config = ConfigDict(extra="forbid")
+
     actor: str | None = Field(default=None, max_length=200)
     tool: str | None = Field(default=None, max_length=200)
     action_id: str | None = Field(default=None, max_length=200)
@@ -73,14 +86,19 @@ class DecisionContext(BaseModel):
     policy_version: str | None = Field(default=None, max_length=50)
     risk: RiskLevel = "medium"
 
+
 class ProviderAttempt(BaseModel):
     provider: str
     success: bool
     latency_ms: float = Field(ge=0)
     error: str | None = None
 
+
 class DecisionResult(BaseModel):
+    """A normalized, auditable, provider-independent result."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
     decision: str | float | bool
     probabilities: dict[str, float] = Field(default_factory=dict)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
