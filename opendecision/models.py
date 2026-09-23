@@ -12,7 +12,9 @@ DecisionType = Literal["choice", "score", "noul"]
 
 class DecisionQuestion(BaseModel):
     """A typed question sent to a decision provider."""
+
     model_config = ConfigDict(extra="allow")
+
     type: DecisionType
     instructions: str
     options: dict[str, str] | None = None
@@ -20,7 +22,7 @@ class DecisionQuestion(BaseModel):
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def validate_shape(self) -> "DecisionQuestion":
+    def validate_shape(self) -> DecisionQuestion:
         if self.type == "choice" and not self.options and not self.criteria:
             raise ValueError("choice questions require options or criteria")
         if self.type == "score" and not self.criteria:
@@ -28,7 +30,7 @@ class DecisionQuestion(BaseModel):
         return self
 
     @classmethod
-    def from_input(cls, question: "DecisionQuestion | Mapping[str, Any] | str") -> "DecisionQuestion":
+    def from_input(cls, question: DecisionQuestion | Mapping[str, Any] | str) -> DecisionQuestion:
         if isinstance(question, cls):
             return question
         if isinstance(question, str):
@@ -36,12 +38,15 @@ class DecisionQuestion(BaseModel):
         return cls.model_validate(question)
 
     def to_laya(self) -> dict[str, Any]:
+        """Return the question shape expected by Laya."""
         return self.model_dump(exclude_none=True)
 
 
 class DecisionResult(BaseModel):
     """A normalized, provider-independent decision result."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
     decision: str | float | bool
     probabilities: dict[str, float] = Field(default_factory=dict)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -51,4 +56,5 @@ class DecisionResult(BaseModel):
     raw_output: Any = None
 
     def matches(self, value: str | float | bool) -> bool:
+        """Return whether the normalized decision equals a value."""
         return self.decision == value

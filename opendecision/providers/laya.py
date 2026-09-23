@@ -1,4 +1,10 @@
-"""Lazy Laya provider."""
+"""Lazy Laya provider.
+
+Laya is optional so the core package can be installed and tested without model
+weights. The import and checkpoint loading happen only on the first prediction.
+"""
+
+from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
@@ -7,9 +13,17 @@ from ..models import DecisionQuestion
 
 
 class LayaProvider:
+    """Use Laya's Router or a named checkpoint as an OpenDecision provider."""
+
     name = "laya"
 
-    def __init__(self, *, model: str = "router", preload: bool = True, device: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model: str = "router",
+        preload: bool = True,
+        device: str | None = None,
+    ) -> None:
         self.model = model
         self.preload = preload
         self.device = device
@@ -19,9 +33,12 @@ class LayaProvider:
         if self._agent is not None:
             return self._agent
         try:
-            import laya
+            import laya  # type: ignore
         except ImportError as exc:
-            raise RuntimeError("Laya is not installed. Install it with `pip install opendecision[laya]`.") from exc
+            raise RuntimeError(
+                "Laya is not installed. Install it with `pip install opendecision[laya]`."
+            ) from exc
+
         if self.model == "router":
             kwargs: dict[str, Any] = {"preload": self.preload}
             if self.device is not None:
@@ -34,7 +51,11 @@ class LayaProvider:
             self._agent = laya.load("convaiinnovations/laya", subfolder=self.model, **kwargs)
         return self._agent
 
-    def predict(self, state: Mapping[str, Any] | str, question: DecisionQuestion) -> Mapping[str, Any]:
+    def predict(
+        self,
+        state: Mapping[str, Any] | str,
+        question: DecisionQuestion,
+    ) -> Mapping[str, Any]:
         agent = self._load()
         state_payload = state if isinstance(state, Mapping) else {"input": state}
         response = agent.predict(state_payload, {"decision": question.to_laya()})

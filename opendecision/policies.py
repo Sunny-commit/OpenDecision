@@ -1,5 +1,7 @@
 """Small YAML-backed decision-pack loader."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,8 @@ from .models import DecisionQuestion
 
 
 class DecisionPolicy(BaseModel):
+    """A named, reviewable decision contract stored in a decision pack."""
+
     name: str
     description: str = ""
     question: DecisionQuestion
@@ -17,6 +21,7 @@ class DecisionPolicy(BaseModel):
 
 
 def load_policy(path: str | Path) -> DecisionPolicy:
+    """Load a policy from a YAML file."""
     policy_path = Path(path)
     with policy_path.open("r", encoding="utf-8") as handle:
         payload: dict[str, Any] = yaml.safe_load(handle) or {}
