@@ -1,0 +1,14 @@
+id: payment-action
+version: 1.0.0
+name: Payment action gate
+description: Route refunds, transfers, and payment changes through appropriate controls.
+risk: critical
+default_action: block
+tags: [finance, payments, approval]
+question:
+  type: choice
+  instructions: Should this payment-related action proceed?
+  options:
+    allow: The action is within an approved low-risk policy and fully authorized.
+    review: A verified finance reviewer must approve the amount, recipient, or exception.
+    block: The action is unauthorized, anomalous, irreversible, or outside policy.

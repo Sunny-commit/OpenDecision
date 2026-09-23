@@ -1,57 +1,87 @@
-from opendecision import DecisionGuard
+import pytest
+
+from opendecision import DecisionContext, DecisionGuard, MemoryAuditSink
+from opendecision.errors import ContractValidationError
 
 
 class FakeProvider:
     name = "fake"
 
-    def __init__(self, answer):
+    def __init__(self, answer=None, error=None):
         self.answer = answer
+        self.error = error
 
     def predict(self, state, question):
-        return {"answer": self.answer, "raw": {"state": state}}
+        if self.error:
+            raise self.error
+        return {"answer": self.answer, "raw": {"model": "fake-v1"}}
 
 
-def test_choice_result_is_normalized():
+def choice_question():
+    return {
+        "type": "choice",
+        "instructions": "Should this action execute?",
+        "options": {"allow": "Proceed", "review": "Review", "block": "Stop"},
+    }
+
+
+def test_choice_normalizes_and_audits_without_raw_state():
+    sink = MemoryAuditSink()
     guard = DecisionGuard(
         FakeProvider(
             {
                 "choice": "review",
                 "probabilities": {"allow": 0.1, "review": 0.8, "block": 0.1},
             }
-        )
+        ),
+        audit_sink=sink,
     )
     result = guard.decide(
-        {"tool": "send_email"},
-        {
-            "type": "choice",
-            "instructions": "Should this action execute?",
-            "options": {"allow": "Proceed", "review": "Review", "block": "Block"},
-        },
+        {"secret": "do-not-log", "tool": "send_email"},
+        choice_question(),
+        context=DecisionContext(
+            actor="user-1",
+            tool="send_email",
+            policy_id="tool-risk",
+            policy_version="1.0.0",
+        ),
     )
     assert result.decision == "review"
-    assert result.confidence == 0.8
-    assert result.provider == "fake"
+    assert result.requires_review is True
+    assert len(result.context_hash) == 64
+    assert sink.events[0].actor == "user-1"
+    assert "secret" not in sink.events[0].model_dump_json()
 
 
-def test_noul_threshold_controls_boolean_decision():
-    guard = DecisionGuard(FakeProvider({"noul": 0.72}))
-    result = guard.decide(
-        {"command": "rm -rf /"},
-        {"type": "noul", "instructions": "Is this destructive?", "threshold": 0.7},
-    )
-    assert result.decision is True
-    assert result.probabilities == {"true": 0.72, "false": 0.28}
+def test_invalid_choice_output_is_rejected():
+    guard = DecisionGuard(FakeProvider({"choice": "invented"}))
+    with pytest.raises(ContractValidationError, match="not one of"):
+        guard.decide({"tool": "x"}, choice_question())
 
 
-def test_score_is_normalized():
-    guard = DecisionGuard(FakeProvider({"score": 1.5, "confidence": 0.9}))
-    result = guard.decide(
-        {"ticket": "Production is unavailable"},
+def test_invalid_state_is_rejected_before_provider():
+    guard = DecisionGuard(FakeProvider({"noul": 0.5}))
+    with pytest.raises(ContractValidationError, match="JSON serializable"):
+        guard.check({"bad": object()}, decision="Is this risky?")
+
+
+def test_failure_modes_review_and_block():
+    provider = FakeProvider(error=RuntimeError("down"))
+    review = DecisionGuard(provider, failure_mode="review").decide({}, choice_question())
+    block = DecisionGuard(provider, failure_mode="block").decide({}, choice_question())
+    assert review.decision == "review" and review.requires_review
+    assert block.decision == "block" and not block.requires_review
+
+
+def test_noul_and_score_normalization():
+    noul = DecisionGuard(FakeProvider({"noul": 0.75})).check({}, decision="Risky?")
+    score = DecisionGuard(FakeProvider({"score": 1.5, "confidence": 0.9})).decide(
+        {},
         {
             "type": "score",
             "instructions": "How urgent is this?",
-            "criteria": ["low", "medium", "critical"],
+            "criteria": ["low", "high"],
         },
     )
-    assert result.decision == 1.5
-    assert result.confidence == 0.9
+    assert noul.decision is True
+    assert score.decision == 1.5

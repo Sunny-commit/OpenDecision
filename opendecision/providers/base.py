@@ -16,4 +16,4 @@ class DecisionProvider(Protocol):
         state: Mapping[str, Any] | str,
         question: DecisionQuestion,
     ) -> Mapping[str, Any]:
-        """Return a provider-native answer and the raw response."""
+        """Return a provider-native answer and optional raw response."""

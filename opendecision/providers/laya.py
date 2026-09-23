@@ -1,20 +1,15 @@
-"""Lazy Laya provider.
-
-Laya is optional so the core package can be installed and tested without model
-weights. The import and checkpoint loading happen only on the first prediction.
-"""
+"""Lazy Laya provider."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
 
+from ..errors import ProviderError
 from ..models import DecisionQuestion
 
 
 class LayaProvider:
-    """Use Laya's Router or a named checkpoint as an OpenDecision provider."""
-
     name = "laya"
 
     def __init__(
@@ -35,20 +30,24 @@ class LayaProvider:
         try:
             import laya  # type: ignore
         except ImportError as exc:
-            raise RuntimeError(
+            raise ProviderError(
                 "Laya is not installed. Install it with `pip install opendecision[laya]`."
             ) from exc
-
-        if self.model == "router":
-            kwargs: dict[str, Any] = {"preload": self.preload}
-            if self.device is not None:
-                kwargs["device"] = self.device
-            self._agent = laya.Router(**kwargs)
-        else:
-            kwargs = {}
-            if self.device is not None:
-                kwargs["device"] = self.device
-            self._agent = laya.load("convaiinnovations/laya", subfolder=self.model, **kwargs)
+        try:
+            if self.model == "router":
+                kwargs: dict[str, Any] = {"preload": self.preload}
+                if self.device is not None:
+                    kwargs["device"] = self.device
+                self._agent = laya.Router(**kwargs)
+            else:
+                kwargs = {}
+                if self.device is not None:
+                    kwargs["device"] = self.device
+                self._agent = laya.load(
+                    "convaiinnovations/laya", subfolder=self.model, **kwargs
+                )
+        except Exception as exc:
+            raise ProviderError(f"failed to load Laya model {self.model!r}: {exc}") from exc
         return self._agent
 
     def predict(
@@ -58,6 +57,15 @@ class LayaProvider:
     ) -> Mapping[str, Any]:
         agent = self._load()
         state_payload = state if isinstance(state, Mapping) else {"input": state}
-        response = agent.predict(state_payload, {"decision": question.to_laya()})
-        answer = response.get("answers", {}).get("decision", {})
-        return {"answer": answer, "raw": response}
+        try:
+            response = agent.predict(state_payload, {"decision": question.to_laya()})
+        except Exception as exc:
+            raise ProviderError(f"Laya prediction failed: {exc}") from exc
+        answer = response.get("answers", {}).get("decision")
+        if not isinstance(answer, Mapping):
+            raise ProviderError("Laya response did not include answers.decision")
+        return {
+            "answer": answer,
+            "raw": response,
+            "provider": f"laya:{self.model}",
+        }

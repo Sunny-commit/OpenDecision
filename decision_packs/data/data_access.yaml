@@ -1,0 +1,14 @@
+id: data-access
+version: 1.0.0
+name: Data access gate
+description: Classify agent reads and writes by authorization and sensitivity.
+risk: high
+default_action: review
+tags: [data, authorization, privacy]
+question:
+  type: choice
+  instructions: Should the agent perform the requested data operation?
+  options:
+    allow: The actor is authorized, scope is minimal, and the operation is low risk.
+    review: Authorization, necessity, or data sensitivity needs human verification.
+    block: The operation is unauthorized, excessive, or exposes restricted data.

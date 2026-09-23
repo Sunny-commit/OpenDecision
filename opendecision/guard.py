@@ -1,94 +1,235 @@
-"""DecisionGuard and provider-output normalization."""
+"""DecisionGuard with strict validation, audit traces, and fail-safe behavior."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Literal
+from uuid import uuid4
 
-from .models import DecisionQuestion, DecisionResult
+from .audit import AuditEvent, AuditSink
+from .errors import ContractValidationError, ProviderError
+from .models import DecisionContext, DecisionQuestion, DecisionResult, ProviderAttempt
 from .providers.base import DecisionProvider
 from .providers.laya import LayaProvider
 
+FailureMode = Literal["raise", "review", "block"]
+
 
 class DecisionGuard:
-    """Evaluate typed decision contracts before an agent takes an action."""
+    """Evaluate typed contracts before an agent acts."""
 
-    def __init__(self, provider: DecisionProvider | None = None, *, model: str = "router") -> None:
+    def __init__(
+        self,
+        provider: DecisionProvider | None = None,
+        *,
+        model: str = "router",
+        audit_sink: AuditSink | None = None,
+        failure_mode: FailureMode = "raise",
+        max_state_bytes: int = 100_000,
+    ) -> None:
         self.provider = provider or LayaProvider(model=model)
+        self.audit_sink = audit_sink
+        self.failure_mode = failure_mode
+        self.max_state_bytes = max_state_bytes
 
     def decide(
         self,
         state: Mapping[str, Any] | str,
         question: DecisionQuestion | Mapping[str, Any] | str,
+        *,
+        context: DecisionContext | Mapping[str, Any] | None = None,
     ) -> DecisionResult:
-        """Evaluate a choice, score, or noul question and normalize its result."""
         contract = DecisionQuestion.from_input(question)
-        output = self.provider.predict(state, contract)
-        answer = output.get("answer", output)
-        raw_output = output.get("raw", output)
-        return self._normalize(answer, raw_output, contract)
+        decision_context = (
+            context
+            if isinstance(context, DecisionContext)
+            else DecisionContext.model_validate(context or {})
+        )
+        context_hash = self._validate_and_hash_state(state)
+        try:
+            output = self.provider.predict(state, contract)
+            answer = output.get("answer", output)
+            raw_output = output.get("raw", output)
+            provider_name = str(output.get("provider", self.provider.name))
+            attempts = [
+                ProviderAttempt.model_validate(item) for item in output.get("attempts", [])
+            ]
+            result = self._normalize(
+                answer,
+                raw_output,
+                contract,
+                decision_context,
+                context_hash,
+                provider_name,
+                attempts,
+            )
+        except Exception as exc:
+            if self.failure_mode == "raise":
+                if isinstance(exc, (ContractValidationError, ProviderError)):
+                    raise
+                raise ProviderError(str(exc)) from exc
+            result = self._failure_result(contract, decision_context, context_hash, exc)
+        self._audit(result, decision_context)
+        return result
 
-    def check(self, state: Mapping[str, Any] | str, *, decision: str) -> DecisionResult:
-        """Convenience method for a boolean allow/block gate."""
-        return self.decide(state, DecisionQuestion(type="noul", instructions=decision))
+    def check(
+        self,
+        state: Mapping[str, Any] | str,
+        *,
+        decision: str,
+        context: DecisionContext | Mapping[str, Any] | None = None,
+    ) -> DecisionResult:
+        return self.decide(
+            state,
+            DecisionQuestion(type="noul", instructions=decision),
+            context=context,
+        )
+
+    def _validate_and_hash_state(self, state: Mapping[str, Any] | str) -> str:
+        if isinstance(state, str):
+            if not state.strip():
+                raise ContractValidationError("state string cannot be empty")
+            encoded = state.encode()
+        elif isinstance(state, Mapping):
+            try:
+                encoded = json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
+            except (TypeError, ValueError) as exc:
+                raise ContractValidationError("state must be JSON serializable") from exc
+        else:
+            raise ContractValidationError("state must be a string or mapping")
+        if len(encoded) > self.max_state_bytes:
+            raise ContractValidationError(
+                f"state exceeds configured limit of {self.max_state_bytes} bytes"
+            )
+        return hashlib.sha256(encoded).hexdigest()
 
     def _normalize(
         self,
         answer: Mapping[str, Any],
         raw_output: Any,
         question: DecisionQuestion,
+        context: DecisionContext,
+        context_hash: str,
+        provider_name: str,
+        attempts: list[ProviderAttempt],
     ) -> DecisionResult:
         if not isinstance(answer, Mapping):
-            raise TypeError("decision provider must return a mapping for its answer")
-
+            raise ContractValidationError("provider answer must be a mapping")
+        common = {
+            "provider": provider_name,
+            "decision_id": str(uuid4()),
+            "created_at": datetime.now(timezone.utc),
+            "context_hash": context_hash,
+            "policy_id": context.policy_id,
+            "policy_version": context.policy_version,
+            "provider_attempts": attempts,
+            "raw_output": raw_output,
+        }
         if question.type == "choice":
-            probabilities = _float_mapping(answer.get("probabilities") or answer.get("probs"))
+            probabilities = _probabilities(answer.get("probabilities") or answer.get("probs"))
             decision = _first(answer, "choice", "label", "decision")
-            if decision is None:
-                raise ValueError("provider response did not contain a choice decision")
-            confidence = _as_probability(_first(answer, "confidence"))
+            choice_options = question.options or (
+                question.criteria if isinstance(question.criteria, dict) else {}
+            )
+            labels = set(choice_options.keys())
+            if decision not in labels:
+                raise ContractValidationError(
+                    f"provider choice {decision!r} is not one of {sorted(labels)}"
+                )
+            if probabilities and set(probabilities) != labels:
+                raise ContractValidationError("provider probabilities must match declared options")
+            confidence = _probability(_first(answer, "confidence"))
             if confidence is None and probabilities:
-                confidence = max(probabilities.values())
+                confidence = probabilities[str(decision)]
+            requires_review = str(decision) == "review"
             return DecisionResult(
                 decision=str(decision),
                 probabilities=probabilities,
                 confidence=confidence,
                 question_type="choice",
-                provider=self.provider.name,
+                requires_review=requires_review,
                 metadata={"raw_answer": dict(answer)},
-                raw_output=raw_output,
+                **common,
             )
-
         if question.type == "score":
             score = _first(answer, "score", "value", "decision")
             if score is None:
-                raise ValueError("provider response did not contain a score decision")
-            distribution = _float_mapping(answer.get("distribution") or answer.get("probabilities"))
-            confidence = _as_probability(_first(answer, "confidence"))
+                raise ContractValidationError("provider response did not contain a score")
+            confidence = _probability(_first(answer, "confidence"))
+            distribution = _probabilities(
+                answer.get("distribution") or answer.get("probabilities")
+            )
             return DecisionResult(
                 decision=float(score),
                 probabilities=distribution,
                 confidence=confidence,
                 question_type="score",
-                provider=self.provider.name,
                 metadata={"raw_answer": dict(answer)},
-                raw_output=raw_output,
+                **common,
             )
-
-        probability = _as_probability(
+        probability = _probability(
             _first(answer, "noul", "probability", "confidence", "decision")
         )
         if probability is None:
-            raise ValueError("provider response did not contain a noul probability")
+            raise ContractValidationError("provider response did not contain a noul probability")
         decision = probability >= question.threshold
         return DecisionResult(
             decision=decision,
             probabilities={"true": probability, "false": 1.0 - probability},
             confidence=max(probability, 1.0 - probability),
             question_type="noul",
-            provider=self.provider.name,
             metadata={"threshold": question.threshold, "raw_answer": dict(answer)},
-            raw_output=raw_output,
+            **common,
+        )
+
+    def _failure_result(
+        self,
+        question: DecisionQuestion,
+        context: DecisionContext,
+        context_hash: str,
+        error: Exception,
+    ) -> DecisionResult:
+        review = self.failure_mode == "review"
+        if question.type == "choice":
+            choice_options = question.options or (
+                question.criteria if isinstance(question.criteria, dict) else {}
+            )
+            labels = list(choice_options.keys())
+            preferred = "review" if review and "review" in labels else "block"
+            decision: str | bool = preferred if preferred in labels else labels[-1]
+        else:
+            decision = False
+        return DecisionResult(
+            decision=decision,
+            probabilities={},
+            confidence=None,
+            question_type=question.type,
+            provider="failure_policy",
+            decision_id=str(uuid4()),
+            created_at=datetime.now(timezone.utc),
+            context_hash=context_hash,
+            policy_id=context.policy_id,
+            policy_version=context.policy_version,
+            requires_review=review,
+            metadata={
+                "failure_mode": self.failure_mode,
+                "error": f"{type(error).__name__}: {error}",
+            },
+        )
+
+    def _audit(self, result: DecisionResult, context: DecisionContext) -> None:
+        if self.audit_sink is None:
+            return
+        self.audit_sink.write(
+            AuditEvent.from_result(
+                result,
+                actor=context.actor,
+                tool=context.tool,
+                action_id=context.action_id,
+            )
         )
 
 
@@ -99,16 +240,24 @@ def _first(mapping: Mapping[str, Any], *keys: str) -> Any:
     return None
 
 
-def _as_probability(value: Any) -> float | None:
+def _probability(value: Any) -> float | None:
     if value is None:
         return None
-    value = float(value)
-    if not 0.0 <= value <= 1.0:
-        raise ValueError(f"probability must be between 0 and 1, got {value}")
-    return value
+    probability = float(value)
+    if not 0.0 <= probability <= 1.0:
+        raise ContractValidationError(f"probability must be between 0 and 1, got {value}")
+    return probability
 
 
-def _float_mapping(value: Any) -> dict[str, float]:
-    if not isinstance(value, Mapping):
+def _probabilities(value: Any) -> dict[str, float]:
+    if value is None:
         return {}
-    return {str(key): float(probability) for key, probability in value.items()}
+    if not isinstance(value, Mapping):
+        raise ContractValidationError("probabilities must be a mapping")
+    normalized: dict[str, float] = {}
+    for key, probability in value.items():
+        validated = _probability(probability)
+        if validated is None:
+            raise ContractValidationError("probability cannot be null")
+        normalized[str(key)] = validated
+    return normalized
