@@ -254,6 +254,10 @@ def _probabilities(value: Any) -> dict[str, float]:
         return {}
     if not isinstance(value, Mapping):
         raise ContractValidationError("probabilities must be a mapping")
-    return {
-        str(key): _probability(probability) for key, probability in value.items()
-    }  # type: ignore[misc]
+    normalized: dict[str, float] = {}
+    for key, probability in value.items():
+        validated = _probability(probability)
+        if validated is None:
+            raise ContractValidationError("probability cannot be null")
+        normalized[str(key)] = validated
+    return normalized
