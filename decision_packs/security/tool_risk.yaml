@@ -1,0 +1,12 @@
+name: tool-risk
+description: Classify whether an agent tool action should proceed, be reviewed, or be blocked.
+tags:
+  - security
+  - tool-use
+question:
+  type: choice
+  instructions: Should the agent execute this tool action?
+  options:
+    allow: The action is low risk and can proceed automatically.
+    review: The action needs human approval before execution.
+    block: The action is destructive, unsafe, or not authorized.
