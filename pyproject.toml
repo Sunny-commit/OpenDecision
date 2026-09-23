@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "opendecision"
+version = "0.1.0"
+description = "A typed decision layer for AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "OpenDecision contributors" }]
+dependencies = ["pydantic>=2.7,<3", "PyYAML>=6.0"]
+
+[project.optional-dependencies]
+laya = ["laya"]
+langgraph = ["langgraph>=0.2"]
+fastapi = ["fastapi>=0.115", "uvicorn>=0.30"]
+dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["opendecision"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
