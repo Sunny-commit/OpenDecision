@@ -1,0 +1,14 @@
+id: privacy-exposure
+version: 1.0.0
+name: Privacy exposure gate
+description: Guard output that may reveal personal, secret, or regulated information.
+risk: critical
+default_action: block
+tags: [privacy, pii, secrets]
+question:
+  type: choice
+  instructions: Should the agent disclose or transmit this information?
+  options:
+    allow: The disclosure is authorized, necessary, minimized, and sent to an approved destination.
+    review: Data classification, consent, recipient, or retention requires verification.
+    block: The content contains restricted personal data, credentials, secrets, or unauthorized records.

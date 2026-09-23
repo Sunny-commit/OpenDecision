@@ -1,0 +1,14 @@
+id: external-api-call
+version: 1.0.0
+name: External API call gate
+description: Guard outbound requests, side effects, and data sharing with third parties.
+risk: high
+default_action: review
+tags: [api, integrations, egress]
+question:
+  type: choice
+  instructions: Should the agent make this external API call?
+  options:
+    allow: The destination, scope, payload, and side effect are approved and expected.
+    review: The destination, data classification, cost, or side effect needs approval.
+    block: The call targets an untrusted service, leaks restricted data, or exceeds authorization.

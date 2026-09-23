@@ -1,0 +1,14 @@
+id: destructive-command
+version: 1.0.0
+name: Destructive command gate
+description: Guard shell, infrastructure, database, and filesystem actions.
+risk: critical
+default_action: block
+tags: [security, shell, infrastructure]
+question:
+  type: choice
+  instructions: Should this potentially destructive command execute?
+  options:
+    allow: The command is scoped, reversible, authorized, and validated in the target environment.
+    review: A qualified operator must confirm scope, backup, target, and rollback readiness.
+    block: The command is destructive, ambiguous, unbounded, unauthorized, or lacks recovery controls.

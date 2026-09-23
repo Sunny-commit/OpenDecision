@@ -1,0 +1,14 @@
+id: permission-change
+version: 1.0.0
+name: HR and permission change gate
+description: Guard role, access, employment, and entitlement changes.
+risk: critical
+default_action: block
+tags: [hr, iam, permissions]
+question:
+  type: choice
+  instructions: Should this identity or employment-related change execute?
+  options:
+    allow: The change is pre-approved, least-privilege, and supported by authoritative records.
+    review: An authorized HR or security reviewer must validate the change.
+    block: The change is unsupported, over-privileged, discriminatory, or unauthorized.
