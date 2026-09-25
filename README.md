@@ -1,77 +1,173 @@
 # OpenDecision
 
-An auditable, typed decision layer for AI agents.
+**A framework-agnostic decision layer for AI agents.**
 
-OpenDecision places explicit contracts, deterministic rules, provider fallback, human review, and privacy-preserving audit traces between an agent and consequential actions. It is a control-layer library, not a safety guarantee.
+OpenDecision places a typed, testable contract between an AI agent and the action it wants to take. It uses [Laya](https://github.com/NandhaKishorM/laya) for fast `choice`, `score`, and `noul` decisions without adding another text-generation step.
 
-## Production-foundation preview
+> Status: early MVP. Do not treat uncalibrated model confidence as a production safety guarantee.
 
-Version 0.2 adds:
+## Why OpenDecision?
 
-- strict decision-contract and provider-output validation;
-- deterministic rules plus ordered provider fallback chains;
-- fail-safe `raise`, `review`, and `block` behavior;
-- policy IDs, semantic versions, risk levels, defaults, and inheritance;
-- context hashes, decision IDs, provider attempts, and JSONL audit sinks;
-- an in-memory human-review workflow with loop protection;
-- reproducible accuracy, confusion, and Brier-score evaluation primitives;
-- coverage, lint, strict typing, and Python 3.10–3.13 CI gates.
+Agents repeatedly need to decide whether to continue, stop, call a tool, ask a person, retrieve more context, or escalate. OpenDecision makes those branches explicit and reusable:
 
-## Example
+- typed decision contracts instead of free-form generated text;
+- normalized results across decision providers;
+- community-maintained YAML decision packs;
+- adapters that do not couple the core SDK to one agent framework;
+- optional Laya loading, so importing OpenDecision never downloads a model.
+
+## Install
+
+```bash
+pip install -e ".[laya]"
+```
+
+To enable the Rich-powered CLI output:
+
+```bash
+pip install -e ".[rich]"
+```
+
+Laya and OpenDecision require Python 3.10 or newer. For the examples:
+
+```bash
+pip install -e ".[laya,langgraph,fastapi]"
+```
+
+## Quick start
 
 ```python
-from opendecision import (
-    DecisionContext,
-    DecisionGuard,
-    JsonlAuditSink,
-    ProviderChain,
-    Rule,
-    RuleProvider,
-)
+from opendecision import DecisionGuard
 
-rules = RuleProvider(
-    [Rule(field="command", operator="contains", value="rm -rf", decision="block")],
-)
-providers = ProviderChain([rules], terminal_answer={"choice": "review"})
-
-guard = DecisionGuard(
-    providers,
-    audit_sink=JsonlAuditSink("audit/decisions.jsonl"),
-    failure_mode="review",
-)
-
+guard = DecisionGuard()
 result = guard.decide(
-    {"command": "rm -rf /tmp/cache"},
-    {
+    state={"tool": "send_email", "recipient": "customer@example.com"},
+    question={
         "type": "choice",
-        "instructions": "Should this command execute?",
+        "instructions": "Should the agent execute this tool action?",
         "options": {
-            "allow": "Authorized and low risk",
-            "review": "Needs human approval",
-            "block": "Unauthorized or destructive",
+            "allow": "Proceed automatically",
+            "review": "Require human approval",
+            "block": "Stop the action",
         },
     },
-    context=DecisionContext(
-        actor="agent:ops",
-        tool="shell",
-        action_id="run-123",
-        policy_id="shell-command-risk",
-        policy_version="1.0.0",
-        risk="critical",
-    ),
+)
+
+print(result.decision)
+print(result.probabilities)
+print(result.confidence)
+```
+
+OpenDecision returns model decisions and evidence; it does **not** ask Laya to generate a reason. Applications may add an explanation separately without confusing generated prose with decision-model output.
+
+## CLI
+
+Evaluate a decision pack against JSON state:
+
+```bash
+opendecision evaluate decision_packs/security/tool_risk.yaml --state '{"tool": "send_email"}'
+```
+
+Or render JSON for scripting:
+
+```bash
+opendecision evaluate decision_packs/security/tool_risk.yaml --state state.json --json
+```
+
+Rich output is enabled automatically when `rich` is installed.
+
+## Decision packs
+
+```python
+from opendecision import DecisionGuard, load_policy
+
+policy = load_policy("decision_packs/security/tool_risk.yaml")
+result = DecisionGuard().decide(agent_state, policy.question)
+```
+
+The first pack includes a tool-risk contract with `allow`, `review`, and `block` outcomes.
+
+## Tool protection decorator
+
+```python
+from opendecision import DecisionGuard, load_policy
+from opendecision.tool_guard import protect_tool
+
+policy = load_policy("decision_packs/security/tool_risk.yaml")
+guard = DecisionGuard()
+
+@protect_tool(guard, policy.question)
+def send_email(to: str, body: str) -> None:
+    ...
+```
+
+The decorator fails closed:
+- `allow` executes the tool
+- `review` raises `ToolReviewRequiredError`
+- anything else raises `ToolBlockedError`
+
+## LangGraph
+
+```python
+from opendecision import DecisionGuard
+from opendecision.integrations.langgraph import decision_node, route_by_decision
+
+graph.add_node("tool_guard", decision_node(DecisionGuard(), question))
+graph.add_conditional_edges(
+    "tool_guard",
+    route_by_decision(),
+    {"allow": "execute_tool", "review": "human_review", "block": "stop"},
 )
 ```
 
-Raw state is hashed for correlation and is not written by the built-in audit sinks. Applications remain responsible for authentication, authorization, durable review storage, encryption, retention, monitoring, calibration, and incident response.
+## FastAPI
+
+```bash
+uvicorn app.main:app --reload
+```
+
+Then send `POST /v1/decide` with `state` and a typed `question`.
+
+## Architecture
+
+```text
+Agent / application
+        |
+DecisionGuard + contract
+        |
+Provider adapter (Laya first)
+        |
+Normalized DecisionResult
+        |
+ALLOW | REVIEW | BLOCK
+```
+
+## Scope of v0.1
+
+- Python SDK and Pydantic contracts
+- lazy Laya provider
+- choice, score, and noul normalization
+- YAML decision packs
+- LangGraph node and routing helpers
+- FastAPI example
+- unit tests that run without downloading model weights
+
+A dashboard, TypeScript SDK, additional frameworks, model-generated explanations, and evaluation tooling are intentionally deferred.
+
+## Calibration and safety
+
+Laya's documentation notes meaningful limitations: base checkpoints can be weak zero-shot on typed workflows, confidence may require domain calibration, and high-cardinality choices need special handling. Benchmark decision packs on representative data before automating consequential actions. Prefer human review when evidence or authorization is insufficient.
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-coverage run -m pytest
-coverage report
+pytest
 ruff check .
-mypy opendecision
 ```
 
-See `docs/production-readiness.md` for operating guidance.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+
+## License
+
+Apache License 2.0. Laya is a separate Apache-2.0 project and remains subject to its own license and notices.
